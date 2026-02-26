@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv_musetalk/
+.venv_sadtalker/
+
+# Local config/secrets
+.env
+
+# Django runtime artifacts
+db.sqlite3
+media/
+staticfiles/
+
+# Model caches / heavy assets
+.models/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/

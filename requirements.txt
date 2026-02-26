@@ -1,0 +1,4 @@
+﻿Django==5.1.6
+python-dotenv==1.0.1
+openai==1.65.2
+requests==2.32.3
