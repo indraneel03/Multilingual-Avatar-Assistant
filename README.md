@@ -10,6 +10,7 @@ A real-time speech-to-speech avatar assistant built with Django + React frontend
 4. Generates TTS response audio.
 5. Runs MuseTalk lip-sync over the configured avatar video.
 6. Returns speaking avatar video + text response to the UI.
+7. Auto-switches avatar persona by detected language family (English / North Indian / South Indian).
 
 ## Current Model Stack
 
@@ -49,6 +50,11 @@ This enables long-term conversation dependency across requests and reloads.
 
 - `POST /api/query/`
   - Main inference endpoint (text/audio -> response text/audio/video).
+- `POST /api/musetalk/preload/`
+  - Preload/pretrain MuseTalk avatar caches/workers for English, North, South avatars.
+  - Optional `sync=1` for blocking mode.
+- `GET /api/musetalk/preload/status/`
+  - Check preload readiness (`cache_ready`, `worker_alive`) for each avatar group.
 - `GET /api/history/sessions/`
   - List stored chat sessions for history drawer.
 - `GET /api/history/session/<session_id>/`
@@ -95,6 +101,23 @@ Open:
 
 - `http://127.0.0.1:8000`
 
+## MuseTalk Preload (Recommended for Faster Switching)
+
+Use terminal command (on demand):
+
+```powershell
+python manage.py preload_avatars
+python manage.py preload_avatars --status
+```
+
+Or use API:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/api/musetalk/preload/
+curl -X POST http://127.0.0.1:8000/api/musetalk/preload/ -d "sync=1"
+curl http://127.0.0.1:8000/api/musetalk/preload/status/
+```
+
 ## Important Environment Variables
 
 - Core:
@@ -132,6 +155,18 @@ Open:
 - ChatGPT-style history drawer with session restore.
 - New Chat reset flow with fresh session id.
 - Premium motion UI using Framer Motion.
+- Idle avatar video switches automatically based on current language avatar.
+
+## Avatar Switching Rules
+
+- English (`en`) -> `Micheal` avatar using:
+  - `static/core/Avatar_Suit_Creation_and_Video.mp4`
+- North Indian languages (`hi`, `gu`, `pa`, `mr`, `bn`, `or`, etc.) -> `Radha` avatar using:
+  - `static/core/Realistic_Avatar_Video_Generation.mp4`
+- South Indian languages (`te`, `ta`, `kn`, `ml`) -> `Durga` avatar using:
+  - `static/core/Telugu_Avatar_Assistant_Saree_Video.mp4`
+
+When language family changes mid-chat, assistant prepends a short switch line (for example: "I am now switching to Durga, your assistant. Namaskaram.") and then continues answer in target language.
 
 ## Disclaimer
 

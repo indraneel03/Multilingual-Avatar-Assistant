@@ -116,8 +116,17 @@ def _store_chat_turn(session: ChatSession, user_text: str, assistant_text: str, 
 
 
 
-def _language_to_bcp47(code: str) -> str:
+def _normalize_lang(code: str) -> str:
+    """Normalize language code to bare ISO 639-1. Strips BCP47 region like '-IN'."""
     value = (code or "").strip().lower()
+    # Strip region suffix: "te-IN" -> "te", "hi-in" -> "hi"
+    if "-" in value:
+        value = value.split("-")[0]
+    return value
+
+
+def _language_to_bcp47(code: str) -> str:
+    value = _normalize_lang(code)
     mapping = {
         "en": "en-IN",
         "hi": "hi-IN",
@@ -335,9 +344,10 @@ def _trim_tts_text(text: str) -> str:
 
 def synthesize_tts(text: str, output_file: Path, language: str = "en", request_id: str = ""):
     if settings.TTS_PROVIDER.lower() == "sarvam":
+        speaker = _tts_speaker_for_language(language)
         payload = {
             "model": settings.SARVAM_TTS_MODEL,
-            "speaker": settings.SARVAM_TTS_SPEAKER,
+            "speaker": speaker,
             "target_language_code": _language_to_bcp47(language),
             "inputs": [text],
             "pace": settings.SARVAM_TTS_PACE,
@@ -810,7 +820,11 @@ def _kickoff_model_warmup():
 
                 def _warmup_musetalk():
                     try:
-                        _ensure_musetalk_worker(_resolve_default_avatar_video())
+                        avatar_videos = _iter_configured_avatar_videos()
+                        if not settings.MUSE_TALK_MULTI_AVATAR_POOL:
+                            avatar_videos = avatar_videos[:1]
+                        for avatar_video in avatar_videos:
+                            _ensure_musetalk_worker(avatar_video)
                     except Exception:
                         pass
 
@@ -857,6 +871,136 @@ def _resolve_default_avatar_video() -> Path:
         if candidate.exists():
             return candidate
     raise RuntimeError("No default avatar video found in static/core.")
+
+
+SOUTH_INDIAN_LANGS = {"te", "telugu", "ta", "tamil", "kn", "kannada", "ml", "malayalam", "south"}
+NORTH_INDIAN_LANGS = {"hi", "hindi", "mr", "marathi", "gu", "gujarati", "bn", "bengali", "pa", "punjabi", "or", "odia", "north"}
+
+# Unicode script ranges for Indian language detection
+_SCRIPT_RANGES = [
+    (0x0C00, 0x0C7F, "te"),   # Telugu
+    (0x0B80, 0x0BFF, "ta"),   # Tamil
+    (0x0C80, 0x0CFF, "kn"),   # Kannada
+    (0x0D00, 0x0D7F, "ml"),   # Malayalam
+    (0x0900, 0x097F, "hi"),   # Devanagari (Hindi/Marathi)
+    (0x0A80, 0x0AFF, "gu"),   # Gujarati
+    (0x0980, 0x09FF, "bn"),   # Bengali
+    (0x0A00, 0x0A7F, "pa"),   # Gurmukhi (Punjabi)
+    (0x0B00, 0x0B7F, "or"),   # Odia
+]
+
+
+# ── Language name → ISO code for intent-based detection ──
+_LANGUAGE_NAME_TO_CODE = {
+    "telugu": "te", "hindi": "hi", "tamil": "ta", "kannada": "kn",
+    "malayalam": "ml", "marathi": "mr", "gujarati": "gu",
+    "bengali": "bn", "bangla": "bn", "punjabi": "pa", "odia": "or",
+    "english": "en",
+}
+_SWITCH_PATTERN = re.compile(
+    r'\b(?:in|speak|talk|reply|respond|switch\s+to|use|change\s+to|convert\s+to|translate\s+to)\s+'
+    + r'(' + '|'.join(_LANGUAGE_NAME_TO_CODE.keys()) + r')\b',
+    re.IGNORECASE,
+)
+
+
+def _detect_language_intent(text: str) -> str:
+    """Detect explicit language switch intent from English text like 'talk in telugu'."""
+    if not text:
+        return ""
+    m = _SWITCH_PATTERN.search(text)
+    if m:
+        return _LANGUAGE_NAME_TO_CODE.get(m.group(1).lower(), "")
+    # Also match just the bare language name as the entire message
+    stripped = text.strip().lower()
+    if stripped in _LANGUAGE_NAME_TO_CODE:
+        return _LANGUAGE_NAME_TO_CODE[stripped]
+    return ""
+
+
+def _detect_language_from_text(text: str) -> str:
+    """Detect language from Unicode script of the text. Returns ISO 639-1 code or empty string."""
+    if not text:
+        return ""
+    counts: dict[str, int] = {}
+    for ch in text:
+        cp = ord(ch)
+        for start, end, lang in _SCRIPT_RANGES:
+            if start <= cp <= end:
+                counts[lang] = counts.get(lang, 0) + 1
+                break
+    if not counts:
+        # Check if mostly ASCII/Latin -> English
+        ascii_count = sum(1 for ch in text if 'a' <= ch.lower() <= 'z')
+        if ascii_count > len(text) * 0.3:
+            return "en"
+        return ""
+    return max(counts, key=counts.get)
+
+
+def _avatar_group_for_language(language: str) -> str:
+    lang = _normalize_lang(language)
+    if lang in SOUTH_INDIAN_LANGS:
+        return "south"
+    if lang in NORTH_INDIAN_LANGS:
+        return "north"
+    return "english"
+
+
+def _tts_speaker_for_language(language: str) -> str:
+    """Pick the Sarvam TTS speaker voice matching the avatar group."""
+    group = _avatar_group_for_language(language)
+    if group == "south":
+        return settings.SARVAM_TTS_SPEAKER_SOUTH
+    if group == "north":
+        return settings.SARVAM_TTS_SPEAKER_NORTH
+    return settings.SARVAM_TTS_SPEAKER_ENGLISH
+
+
+def _avatar_idle_video_url_for_group(group: str) -> str:
+    base_dir = Path(settings.BASE_DIR)
+    mapping = {
+        "english": settings.AVATAR_VIDEO_ENGLISH,
+        "north": settings.AVATAR_VIDEO_NORTH,
+        "south": settings.AVATAR_VIDEO_SOUTH,
+    }
+    rel_path = mapping.get(group, mapping["english"])
+    return f"{settings.STATIC_URL}{rel_path.removeprefix('static/')}"
+
+
+def _resolve_avatar_video_for_language(language: str) -> Path:
+    base_dir = Path(settings.BASE_DIR)
+    group = _avatar_group_for_language(language)
+    if group == "south":
+        configured = (base_dir / settings.AVATAR_VIDEO_SOUTH).resolve()
+    elif group == "north":
+        configured = (base_dir / settings.AVATAR_VIDEO_NORTH).resolve()
+    else:
+        configured = (base_dir / settings.AVATAR_VIDEO_ENGLISH).resolve()
+    if configured.exists():
+        return configured
+    return _resolve_default_avatar_video()
+
+
+def _iter_configured_avatar_videos() -> list[Path]:
+    """Return avatar videos to preload. Skip North/Hindi to save VRAM."""
+    base_dir = Path(settings.BASE_DIR)
+    candidates = [
+        (base_dir / settings.AVATAR_VIDEO_ENGLISH).resolve(),
+        (base_dir / settings.AVATAR_VIDEO_SOUTH).resolve(),
+    ]
+    found: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            found.append(candidate)
+    if found:
+        return found
+    return [_resolve_default_avatar_video()]
 
 
 def _session_preview(session_id: str) -> str:
@@ -965,7 +1109,7 @@ def history_session_detail(request, session_id: str):
     return JsonResponse(
         {
             "session_id": session.session_id,
-            "language": session.language or "",
+            "language": _normalize_lang(session.language) or "",
             "history": _build_frontend_history(session),
         }
     )
@@ -980,7 +1124,7 @@ def avatar_query(request):
 
     query_id = uuid.uuid4().hex
     requested_language = request.POST.get("language", "auto").strip().lower()
-    language = "" if requested_language in {"", "auto", "detect"} else requested_language
+    language = "" if requested_language in {"", "auto", "detect"} else _normalize_lang(requested_language)
     requested_lipsync_model = "musetalk"
     fast_voice_mode = False
     session_obj, session_id = _get_or_create_chat_session(request.POST.get("session_id", ""), language)
@@ -1004,6 +1148,16 @@ def avatar_query(request):
             mime_type=(getattr(audio_upload, "content_type", "") or "audio/webm"),
             request_id=query_id,
         )
+        language = _normalize_lang(language)  # Normalize BCP47 from STT (e.g. te-IN -> te)
+    elif not language and transcript:
+        # No audio upload and language is auto — detect from typed text
+        # First try explicit language switch intent (e.g. "talk in telugu")
+        language = _detect_language_intent(transcript)
+        if language:
+            print(f"[AVATAR] Intent-detected language: {language!r} from text: {transcript!r}")
+        else:
+            language = _detect_language_from_text(transcript)
+            print(f"[AVATAR] Script-detected language: {language!r} from text: {transcript!r}")
 
     if not transcript:
         return JsonResponse({"error": "Provide text or an audio file."}, status=400)
@@ -1011,14 +1165,27 @@ def avatar_query(request):
     try:
         request_started = time.time()
         llm_language = language or "en"
+        print(f"[AVATAR] query_id={query_id} | language={language!r} | llm_language={llm_language!r}")
         llm_text = _trim_tts_text(generate_chat_reply(transcript, llm_language, history_turns))
         llm_done = time.time()
+
+        # Re-detect language from LLM response if it actually responded in a
+        # non-English script (e.g. user said "talk in telugu" and LLM replied
+        # in Telugu script).  This ensures TTS + avatar use the right language.
+        response_lang = _detect_language_from_text(llm_text)
+        if response_lang and response_lang != "en" and language in ("en", ""):
+            print(f"[AVATAR] Post-LLM re-detected language: {response_lang!r} (was {language!r})")
+            language = response_lang
+            llm_language = language
+
         _store_chat_turn(session_obj, transcript, llm_text, llm_language)
 
         tts_output = media_root / f"{query_id}_reply.mp3"
         tts_provider = synthesize_tts(llm_text, tts_output, language, request_id=query_id)
         tts_done = time.time()
-        avatar_video_path = _resolve_default_avatar_video()
+        avatar_group = _avatar_group_for_language(language or llm_language)
+        avatar_video_path = _resolve_avatar_video_for_language(language or llm_language)
+        print(f"[AVATAR] FINAL: language={language!r} avatar_group={avatar_group!r} video={avatar_video_path.name}")
         avatar_image_path = None
         try:
             avatar_image_path = _resolve_default_avatar_image()
@@ -1075,6 +1242,8 @@ def avatar_query(request):
                 "audio_url": f"{settings.MEDIA_URL}{tts_output.name}",
                 "video_url": video_url,
                 "avatar_url": (f"{settings.STATIC_URL}core/{avatar_image_path.name}" if avatar_image_path else ""),
+                "avatar_group": avatar_group,
+                "avatar_idle_video_url": _avatar_idle_video_url_for_group(avatar_group),
                 "warning": warning,
                 "timing_ms": {
                     "llm": int((llm_done - request_started) * 1000),
