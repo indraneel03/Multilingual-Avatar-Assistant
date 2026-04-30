@@ -21,7 +21,12 @@ A real-time speech-to-speech avatar assistant built with Django + React frontend
 
 ## Architecture
 
-- Backend: Django (`core/views.py`) handles STT, LLM, TTS, lip-sync orchestration.
+- Backend:
+  - `core/views.py` keeps HTTP endpoint orchestration thin.
+  - `core/services/speech.py` handles STT/TTS.
+  - `core/services/ai.py` handles LLM + local fallback text.
+  - `core/services/language_avatar.py` handles language detection and avatar switching rules.
+  - `core/services/lipsync.py` handles MuseTalk/SadTalker execution, worker pooling, and switch clip caching.
 - Frontend: React + Framer Motion (`static/core/app.js`) for avatar UI, mic, history, and chat interactions.
 - Storage:
   - SQLite (default Django DB) for persistent chat sessions/messages.
@@ -137,6 +142,8 @@ curl http://127.0.0.1:8000/api/musetalk/preload/status/
   - `MUSE_TALK_VERSION`
   - `MUSE_TALK_PERSISTENT_WORKER`
   - `MUSE_TALK_USE_FAST_PROFILE`
+  - `MUSE_TALK_MAX_VRAM_AVATARS`
+  - `MUSE_TALK_PRELOAD_GROUPS`
 
 - Avatar:
   - `DEFAULT_AVATAR_VIDEO` (currently points to `static/core/Realistic_Avatar_Video_Generation.mp4`)
@@ -148,6 +155,11 @@ curl http://127.0.0.1:8000/api/musetalk/preload/status/
   - MuseTalk generation time
   - cold-start vs warm persistent worker
 - Current project includes low-latency MuseTalk profile tuning and persistent worker mode.
+- Switch-only commands like `speak in telugu` now use a faster path:
+  - the current avatar plays a cached switch clip
+  - the UI immediately moves to the target avatar idle state
+  - the app avoids generating a second full reply video for that command
+- For 2-avatar VRAM setups, prefer `MUSE_TALK_PRELOAD_GROUPS=english,south` when Telugu switching is more important than Hindi.
 
 ## Frontend Features
 
@@ -166,7 +178,10 @@ curl http://127.0.0.1:8000/api/musetalk/preload/status/
 - South Indian languages (`te`, `ta`, `kn`, `ml`) -> `Durga` avatar using:
   - `static/core/Telugu_Avatar_Assistant_Saree_Video.mp4`
 
-When language family changes mid-chat, assistant prepends a short switch line (for example: "I am now switching to Durga, your assistant. Namaskaram.") and then continues answer in target language.
+When language family changes mid-chat:
+
+- For switch-only commands such as `speak in telugu`, the current avatar says a short switch line such as `Sure, switching to Pooja, your South avatar.` and then the UI moves to the target avatar.
+- For normal queries that also request another language, the current avatar plays the switch prelude first and the target avatar then speaks the main reply.
 
 ## Disclaimer
 

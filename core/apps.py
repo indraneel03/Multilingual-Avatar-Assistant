@@ -20,8 +20,8 @@ class CoreConfig(AppConfig):
             import time
             time.sleep(2)  # Let server finish binding
             try:
-                from core.views import _kickoff_model_warmup
-                _kickoff_model_warmup()
+                from core.services.lipsync import kickoff_model_warmup
+                kickoff_model_warmup()
                 print("[AutoPreload] Model warmup triggered on server start.")
             except Exception as exc:
                 print(f"[AutoPreload] Warmup failed: {exc}")

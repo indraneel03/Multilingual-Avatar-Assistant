@@ -514,6 +514,7 @@ function App() {
     if (!isVoiceOnly) {
       setHistory((prev) => [...prev, userMessage]);
     }
+    setChatOpen(true);
     setLoading(true);
 
     try {
@@ -569,8 +570,17 @@ function App() {
       }
 
       setHistory((prev) => {
+        const assistantMessages = [];
+        if (payload.switch_text) {
+          assistantMessages.push({
+            query_id: `${payload.query_id || `switch_${Date.now()}`}_switch`,
+            llm_text: payload.switch_text,
+            isUser: false,
+          });
+        }
+        assistantMessages.push(payload);
         if (!isVoiceOnly) {
-          return [...prev, payload];
+          return [...prev, ...assistantMessages];
         }
         return [
           ...prev,
@@ -579,13 +589,14 @@ function App() {
             transcript: (payload.transcript || "Voice message").trim() || "Voice message",
             isUser: true,
           },
-          payload,
+          ...assistantMessages,
         ];
       });
       setText("");
       setAudioFile(null);
       fetchSavedSessions();
     } catch (error) {
+      setChatOpen(true);
       setHistory((prev) => [
         ...prev,
         { query_id: `error_${Date.now()}`, error: error.message, isError: true },
